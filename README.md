@@ -1,5 +1,13 @@
 # Astro + Vue Vapor: production island dead after hydration
 
+**TL;DR** — Under Vue 3.6's production Vapor runtime (incl. `beta.17`), a
+non-inline `<script setup vapor>` component hydrates dead / crashes on fresh mount
+(#1 `handleSetupResult`) and its string template refs never reach the setup
+variable (#1b `setRef`) — both `__DEV__`-gated wiring the prod build DCEs. A plain
+`astro build` always emits non-inline codegen, so Astro islands hit it.
+`pnpm install && pnpm verify` proves it in a real browser; the bundled patch fixes
+both.
+
 A `<script setup vapor>` island server-renders, then hydrates **dead** under
 Vue 3.6's production runtime: the button's `@click` never lands, clicks do
 nothing. `astro dev` runs the identical codegen fine, so the bug is in
