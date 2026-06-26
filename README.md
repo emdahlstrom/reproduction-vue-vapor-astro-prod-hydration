@@ -1,28 +1,27 @@
-# Astro + Vue Vapor: island dead after hydration under the production runtime
+# Astro + Vue Vapor: production island dead after hydration
 
-An Astro app that SSRs and hydrates a single Vue **Vapor** island
-(`<script setup vapor>`). Under the Vue 3.6 **production** runtime the island is
-**dead after hydration** — the button's click handler never lands, clicks do
-nothing — because Astro emits **non-inline** vapor codegen (a separate
-`render()`), and the prod runtime's `handleSetupResult` drops that `render()`.
-The `astro dev` runtime runs the identical codegen fine, so this is a runtime
-bug, not a compiler one.
+A `<script setup vapor>` island server-renders, then hydrates **dead** under
+Vue 3.6's production runtime: the button's `@click` never lands, clicks do
+nothing. `astro dev` runs the identical codegen fine, so the bug is in
+`@vue/runtime-vapor`, not the compiler. Still present on `vue@3.6.0-beta.17`.
 
-`beta.17` does **not** fix it (verified here against the latest beta). A
-`@vue/runtime-vapor` patch does — shipped in `patches/` and wired via
-`pnpm.patchedDependencies`, so `pnpm install` gives a working app out of the box.
+Two production-only bugs, one root cause: the setup-state wiring lives in a
+`__DEV__`-gated branch the prod build dead-code-eliminates. Both bite only the
+**non-inline** codegen (a separate `render()` instead of the template folded into
+`setup()`) — which is exactly what Astro emits, even in `astro build`.
 
-- `vue@3.6.0-beta.17` (`@vue/runtime-vapor@3.6.0-beta.17`)
-- `astro@7`, `@astrojs/vue@7`, `@vitejs/plugin-vue@6.0.7`, node 24
+- `vue@3.6.0-beta.17`, `astro@7`, `@astrojs/vue@7`, `@vitejs/plugin-vue@6.0.7`, node 24
+- Companion pure-Vite repro: https://github.com/emdahlstrom/reproduction-vue-vapor-ssr-prod-hydration
 
-## Reproduce
+## Run
 
 ```bash
-pnpm install   # applies patches/vue@3.6.0-beta.17.patch → working island
+pnpm install   # applies patches/vue@3.6.0-beta.17.patch → a working island
 pnpm verify    # toggles the patch off/on, builds each, drives headless Chromium
 ```
 
-`pnpm verify` builds the site four ways and probes the island in a real browser:
+`pnpm verify` builds the site four ways and probes the hydrated island in a real
+browser:
 
 ```text
 ✓ unpatched            prod runtime, stock
@@ -35,80 +34,69 @@ pnpm verify    # toggles the patch off/on, builds each, drives headless Chromium
     "count is 0" -> "count is 1"  $evtclick=function  ref: ref-ok
 ```
 
-By hand: `pnpm dev` (dev runtime, works) vs `pnpm build && pnpm preview` (prod
-runtime + the shipped patch, works). To see it broken, drop the
-`pnpm.patchedDependencies` entry, `pnpm install`, and rebuild.
+Stock prod runtime: the click never registers (`$evtclick` is `undefined`).
+Fix #1 revives the island but the template ref is still null. Fix #1b resolves
+the ref. The dev runtime — same codegen — is alive throughout.
 
-## Why Astro triggers it
+## Why Astro hits it
 
 `@vitejs/plugin-vue` folds the template into `setup()` (inline) only when
-`isUseInlineTemplate` holds — `!devServer && !devToolsEnabled`. Astro runs the
-plugin during `astro build` with its `devServer` handle still set, so **every**
-Vue component is compiled **non-inline** (a separate `render()`), even in the
-production build. That non-inline output is the exact path the prod runtime bug
-breaks. (The Vite-only sibling repro at `../vue-vapor-ssr-prod-hydration` forces
-the same output with `features: { prodDevtools: true }`; in Astro it happens with
-no flag.)
+`!devServer && !devToolsEnabled`. Astro runs the plugin during `astro build`
+with its `devServer` handle still set, so **every** Vue component compiles
+non-inline — a separate `render()` — even in the production build. That is the
+path the prod runtime breaks. (The pure-Vite sibling forces the same output with
+`features: { prodDevtools: true }`; in Astro it needs no flag.)
+
+## Root cause and fixes
+
+Both fixes target the minified `vue.runtime-with-vapor.esm-browser.prod.js`, the
+build Astro bundles on the client. `patch.mjs` holds them as exact string
+transforms — the single source of truth for both the shipped patch and
+`pnpm verify` — and each asserts its target, so a vue bump fails loudly.
+
+**#1 — `handleSetupResult` never calls `render()`** (`runtime-vapor/src/component.ts`).
+A non-inline `setup()` returns the bindings object; in prod the branch that
+detects "bindings + a separate `render()`" is `__DEV__`-gated and DCE'd, so the
+object is assigned straight to `instance.block` and `render()` never runs. The
+island hydrates dead — the delegated `$evtclick` handler is `undefined`.
 
 ```js
-// non-inline (what Astro emits): the handler is attached inside render(_ctx)
-$evtclick = i(() => _ctx.count++)
+// before the bare `else instance.block = setupResult`, restore:
+else if (!isBlock(setupResult) && component.render) {
+  instance.setupState = proxyRefs(setupResult)
+  instance.block = callRender(component.render, instance, instance.setupState)
+}
 ```
 
-## The two bugs (both still present on beta.17)
+**#1b — a string template ref never reaches the setup variable**
+(`runtime-vapor/src/apiTemplateRef.ts`). `setRef` writes `ref="el"` only to
+`instance.refs`; the `setupState[ref] = node` write — which sets the
+`const el = ref()` variable through its `proxyRefs` proxy — is `__DEV__`-gated and
+DCE'd, so `el.value` stays null in `onMounted`. Masked by #1. The fix un-gates the
+`setupState` handle and that write, keeping the existing `canSetSetupRef` guard;
+in the minified browser build the helpers are fully DCE'd, so the patch re-derives
+them at the top of `setRef`.
 
-Both are the same pathology — the setup-state wiring lives in a `__DEV__`-gated
-branch that the production build dead-code-eliminates.
-
-**#1 — `handleSetupResult` never calls `render()`.** A non-inline `setup()`
-returns the bindings object; in prod the discriminator that says "bindings +
-separate render" vs "setup returned a block" is DCE'd, so the bindings object is
-assigned straight to `instance.block` and `render()` never runs. The island
-server-renders, then hydrates dead: the delegated `$evtclick` handler is
-`undefined` on the live node.
-
-**#1b — template ref never reaches the setup variable.** `setRef` writes a
-`ref="el"` only to `instance.refs`; the `setupState[el] = node` write (which sets
-the `const el = ref()` setup variable through its `proxyRefs` proxy) is
-`__DEV__`-gated and DCE'd. So `el.value` stays `null` in `onMounted`. Masked by
-#1 (no `render()`, no `onMounted`), it only surfaces once #1 is fixed — the
-`#1 only` row above.
-
-## The fix
-
-`patches/vue@3.6.0-beta.17.patch` edits the build the Astro client bundles,
-`vue/dist/vue.runtime-with-vapor.esm-browser.prod.js`:
-
-1. **`handleSetupResult`** — restore the discriminator outside the `__DEV__`
-   gate: for a non-block `setup()` result with a `render()`, set
-   `instance.setupState = proxyRefs(result)` and call `render()` with it.
-2. **`setRef`** — re-derive the setup-state handle and an "is this a real setup
-   key" check, then write the node through it on the string-ref path.
-
-The patch file is large because it diffs a minified single-line build. The two
-edits are defined as exact string transforms in `patch.mjs` (the single source of
-truth, used by both `verify.mjs` and `make-patch.mjs`); each asserts its target,
-so a vue bump that changes the codegen fails loudly. Re-generate with
-`node make-patch.mjs` after re-pointing `patch.mjs` at the new build.
+Regenerate the patch after a vue bump (re-point the snippets in `patch.mjs`
+first): `node patch.mjs`.
 
 ## Layout
 
 ```
-astro.config.mjs                  astroVueVapor() before @astrojs/vue
-integrations/astro-vue-vapor/     SSR + client hydration for vapor islands
-  index.mjs                       redirects client `vue` → with-vapor browser build
-  server.mjs  client.mjs  _shared.mjs
-src/components/Island.vue         the island: counter (#1) + template-ref probe (#1b)
-src/pages/index.astro             mounts <Island client:load />
-patch.mjs                         the two runtime edits as string transforms
-make-patch.mjs                    regenerate patches/vue@3.6.0-beta.17.patch
-verify.mjs                        4-state proof in headless Chromium
+astro.config.mjs                 astroVueVapor() registered before @astrojs/vue
+integrations/astro-vue-vapor/
+  index.mjs                      routes client `vue` → with-vapor build; picks prod/dev build
+  server.mjs                     createSSRApp → renderToString
+  client.mjs                     createSSRApp + vaporInteropPlugin → mount(el, hydrate)
+src/components/Island.vue        counter (#1) + template-ref probe (#1b)
+src/pages/index.astro            <Island client:load />
+patch.mjs                        the two edits as string transforms; `node patch.mjs` regenerates the patch
+verify.mjs                       4-state proof in headless Chromium
 ```
 
 ## Notes
 
-- Verified in a real browser. happy-dom/jsdom are not reliable oracles here — they
-  false-report the working case.
-- The integration ships the **production** with-vapor browser build on the client
-  (`astro build`) and keeps the **dev** build for `astro dev`; the SSR side uses
-  the modular `vue`, which ssr-compiles vapor SFCs to a standard `ssrRender`.
+- Verified in a real browser; happy-dom/jsdom false-report the working case.
+- The client bundles the **production** with-vapor browser build (`astro build`)
+  and keeps the **dev** build for `astro dev`. SSR uses the modular `vue`, which
+  compiles vapor SFCs to a standard `ssrRender`.

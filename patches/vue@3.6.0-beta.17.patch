@@ -1,5 +1,5 @@
 diff --git a/dist/vue.runtime-with-vapor.esm-browser.prod.js b/dist/vue.runtime-with-vapor.esm-browser.prod.js
-index 94c9381f09dd0441f499a7b8382217c7f90a68ab..b000c63aeadd1242c9810b183f4f9a3cb60bbb81 100644
+index 94c9381f09dd0441f499a7b8382217c7f90a68ab..f06f5aef67ad2081735f83f5e7a6665955455cea 100644
 --- a/dist/vue.runtime-with-vapor.esm-browser.prod.js
 +++ b/dist/vue.runtime-with-vapor.esm-browser.prod.js
 @@ -9,4 +9,4 @@ function e(e){let t=Object.create(null);for(let n of e.split(`,`))t[n]=1;return

@@ -1,14 +1,20 @@
-// Single source of truth for the two runtime edits, as string transforms on
-// `vue/dist/vue.runtime-with-vapor.esm-browser.prod.js` — the build the Astro
-// client bundles (see integrations/astro-vue-vapor/index.mjs). Both make-patch.mjs
-// (which produces patches/vue@3.6.0-beta.17.patch) and verify.mjs use these, so
-// the shipped patch and the proof can never drift.
+// The two runtime edits, as string transforms on the build Astro bundles on the
+// client: `vue/dist/vue.runtime-with-vapor.esm-browser.prod.js`. This is the
+// single source of truth — verify.mjs applies these to prove each state, and
+// running `node patch.mjs` regenerates patches/vue@3.6.0-beta.17.patch from them
+// (wired via pnpm.patchedDependencies), so the shipped patch and the proof can
+// never drift.
 //
-// The file is minified, so the targets are mangled names from the 3.6.0-beta.17
-// build: handleSetupResult is `Tg`, callRender `mg`, EMPTY_OBJ `t`, isBlock `Jh`,
+// The build is minified, so the targets are mangled names from 3.6.0-beta.17:
+// handleSetupResult is `Tg`, callRender `mg`, EMPTY_OBJ `t`, isBlock `Jh`,
 // proxyRefs `bn`; setRef is `Oy`, refs `u`, isTemplateRefKey `Yi`. Each transform
-// asserts its exact target is present, so a vue bump that changes the codegen
-// fails loudly instead of silently no-op'ing.
+// asserts its target is present, so a vue bump that changes the codegen fails
+// loudly instead of silently no-op'ing.
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 export const VUE_PROD_BROWSER_BUILD =
   'vue/dist/vue.runtime-with-vapor.esm-browser.prod.js'
@@ -57,12 +63,30 @@ export const applyFix1b = (src) =>
 
 /** Reverse both fixes — used to recover the pristine runtime from any state. */
 export function toUnpatched(src) {
-  let out = src
-  if (out.includes(FIX1_TO)) out = out.replace(FIX1_TO, FIX1_FROM)
-  if (out.includes(FIX1B_ANCHOR_TO)) out = out.replace(FIX1B_ANCHOR_TO, FIX1B_ANCHOR_FROM)
-  if (out.includes(FIX1B_WRITE_TO)) out = out.replace(FIX1B_WRITE_TO, FIX1B_WRITE_FROM)
-  return out
+  return src
+    .replace(FIX1_TO, FIX1_FROM)
+    .replace(FIX1B_ANCHOR_TO, FIX1B_ANCHOR_FROM)
+    .replace(FIX1B_WRITE_TO, FIX1B_WRITE_FROM)
 }
 
-/** True if `src` is the stock, unpatched runtime. */
-export const isUnpatched = (src) => src.includes(FIX1_FROM) && !src.includes(FIX1_TO)
+// `node patch.mjs` — regenerate patches/vue@3.6.0-beta.17.patch with the pnpm
+// patch workflow and wire it via pnpm.patchedDependencies. Run after a vue bump,
+// having first re-pointed the snippets above at the new codegen.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const VUE_PKG = 'vue@3.6.0-beta.17'
+  const editDir = mkdtempSync(join(tmpdir(), 'vue-vapor-patch-'))
+  const run = (...args) => {
+    const r = spawnSync('pnpm', args, { encoding: 'utf8' })
+    if (r.status !== 0) throw new Error(`pnpm ${args.join(' ')} failed:\n${r.stdout}\n${r.stderr}`)
+  }
+  try {
+    run('patch', VUE_PKG, '--edit-dir', editDir)
+    // Inside the unpacked package the build sits at dist/… (strip the `vue/` prefix).
+    const file = join(editDir, VUE_PROD_BROWSER_BUILD.replace(/^vue\//, ''))
+    writeFileSync(file, applyFix1b(applyFix1(toUnpatched(readFileSync(file, 'utf8')))))
+    run('patch-commit', editDir)
+  } finally {
+    rmSync(editDir, { recursive: true, force: true })
+  }
+  console.log('Wrote patches/vue@3.6.0-beta.17.patch and wired pnpm.patchedDependencies.')
+}

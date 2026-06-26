@@ -1,31 +1,26 @@
 // Client renderer: a vDOM host + vaporInteropPlugin hydrates the standard
-// ssrRender output (markers match). Mirrors @astrojs/vue's client.js.
+// ssrRender output (the SSR markers match). Mirrors @astrojs/vue's client.js.
 //
 // Imports bare `vue`, which the integration's Vite plugin redirects to the
-// with-vapor build — the SAME module the vapor SFCs resolve to. That single
-// shared copy is essential: two copies of the runtime each carry their own
-// `currentInstance`, so the vapor slot/effect helpers read null and hydration
-// crashes ("Cannot read properties of null (reading 'rawSlots')"). Dynamic so
-// the runtime stays code-split.
-import { buildSlots, makeHost } from './_shared.mjs'
-
+// with-vapor build — the SAME module the vapor SFC resolves to. One shared copy
+// is essential: two copies each carry their own `currentInstance`, so the vapor
+// interop helpers read null and hydration crashes. Dynamic import keeps the
+// runtime code-split.
 const vuePromise = import('vue')
 
-export default (element) => async (Component, props, slotted, { client }) => {
+export default (element) => async (Component, props, _slotted, { client }) => {
   if (!element.hasAttribute('ssr') && client !== 'only') return
-  const { Suspense, createApp, createSSRApp, defineComponent, h, vaporInteropPlugin } =
-    await vuePromise
+  const { createApp, createSSRApp, h, vaporInteropPlugin } = await vuePromise
 
-  const slots = buildSlots(slotted, defineComponent, h)
   const isHydrate = client !== 'only'
-  const app = (isHydrate ? createSSRApp : createApp)(
-    makeHost({ Suspense, h }, Component, props, slots),
-  )
-  app.config.idPrefix = element.getAttribute('prefix') ?? undefined
+  // Same vnode tree as the server (see server.mjs) so hydration markers align.
+  const app = (isHydrate ? createSSRApp : createApp)({
+    render: () => h(Component, props || {}),
+  })
   app.use(vaporInteropPlugin)
   app.mount(element, isHydrate)
-  // Deterministic "hydration done" signal: the event listeners are now wired,
-  // so tests (and anything else) can wait for this instead of racing the click.
+  // Deterministic "hydration done" signal: the listeners are now wired, so tests
+  // can wait for this instead of racing the click.
   element.setAttribute('data-vapor-hydrated', '')
   element.addEventListener('astro:unmount', () => app.unmount(), { once: true })
 }

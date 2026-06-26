@@ -14,7 +14,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import { createRequire } from 'node:module'
-import { extname, join, normalize } from 'node:path'
+import { extname, join, normalize, sep } from 'node:path'
 import { chromium } from 'playwright'
 import { applyFix1, applyFix1b, toUnpatched, VUE_PROD_BROWSER_BUILD } from './patch.mjs'
 
@@ -29,7 +29,7 @@ function serve(root) {
   const server = http.createServer((req, res) => {
     const p = decodeURIComponent((req.url || '/').split('?')[0])
     const f = normalize(join(root, p === '/' ? '/index.html' : p))
-    if (!f.startsWith(root) || !existsSync(f) || statSync(f).isDirectory()) return res.writeHead(404).end()
+    if (!f.startsWith(root + sep) || !existsSync(f) || statSync(f).isDirectory()) return res.writeHead(404).end()
     res.writeHead(200, { 'content-type': MIME[extname(f)] || 'application/octet-stream' })
     res.end(readFileSync(f))
   })
@@ -77,12 +77,17 @@ async function probe() {
 const alive = (r) => r.evtclick === 'function' && r.before !== r.after && !r.error
 const refOk = (r) => /ref-ok$/.test(r.ref || '')
 
+// Pin VAPOR_FORCE_DEV_RUNTIME per state so an ambient value can't turn a "prod"
+// build into a dev one (or vice versa).
+const PROD = { VAPOR_FORCE_DEV_RUNTIME: '0' }
+const DEV = { VAPOR_FORCE_DEV_RUNTIME: '1' }
+
 const base = toUnpatched(readFileSync(VUE_FILE, 'utf8'))
 const states = [
-  { label: 'unpatched            prod runtime, stock', src: base, env: {}, ok: (r) => !alive(r) && r.evtclick === 'undefined' && !refOk(r) },
-  { label: '#1 only              prod runtime, handleSetupResult fixed', src: applyFix1(base), env: {}, ok: (r) => alive(r) && /ref-null$/.test(r.ref || '') },
-  { label: '#1 + #1b (full)      prod runtime, both fixed', src: applyFix1b(applyFix1(base)), env: {}, ok: (r) => alive(r) && refOk(r) },
-  { label: 'dev runtime          control, same codegen', src: base, env: { VAPOR_FORCE_DEV_RUNTIME: '1' }, ok: (r) => alive(r) && refOk(r) },
+  { label: 'unpatched            prod runtime, stock', src: base, env: PROD, ok: (r) => r.before === r.after && r.evtclick === 'undefined' && /pending$/.test(r.ref || '') && !r.error },
+  { label: '#1 only              prod runtime, handleSetupResult fixed', src: applyFix1(base), env: PROD, ok: (r) => alive(r) && /ref-null$/.test(r.ref || '') },
+  { label: '#1 + #1b (full)      prod runtime, both fixed', src: applyFix1b(applyFix1(base)), env: PROD, ok: (r) => alive(r) && refOk(r) },
+  { label: 'dev runtime          control, same codegen', src: base, env: DEV, ok: (r) => alive(r) && refOk(r) },
 ]
 
 const original = readFileSync(VUE_FILE)

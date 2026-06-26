@@ -10,8 +10,6 @@ import Island from '../components/Island.vue'
     <title>Astro + Vue Vapor prod hydration repro</title>
   </head>
   <body>
-    <!-- client:load: the island is server-rendered into this page, then hydrated.
-         Under the unpatched prod runtime it hydrates dead (bug #1). -->
     <Island client:load />
   </body>
 </html>
