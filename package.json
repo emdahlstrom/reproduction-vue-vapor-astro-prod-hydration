@@ -1,0 +1,46 @@
+{
+  "name": "astro-vapor-repro",
+  "description": "Minimal Astro reproduction: a Vue 3.6 Vapor island is dead after hydration under the production runtime, because Astro emits non-inline vapor codegen.",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview --port 4173 --host 127.0.0.1",
+    "verify": "node verify.mjs"
+  },
+  "dependencies": {
+    "@astrojs/vue": "^7.0.0",
+    "@vue/runtime-vapor": "3.6.0-beta.17",
+    "astro": "^7.0.0",
+    "vue": "3.6.0-beta.17"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "6.0.7",
+    "playwright": "^1.61.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp"
+    ],
+    "overrides": {
+      "vue": "3.6.0-beta.17",
+      "@vue/runtime-vapor": "3.6.0-beta.17",
+      "@vue/runtime-dom": "3.6.0-beta.17",
+      "@vue/runtime-core": "3.6.0-beta.17",
+      "@vue/server-renderer": "3.6.0-beta.17",
+      "@vue/compiler-sfc": "3.6.0-beta.17",
+      "@vue/compiler-dom": "3.6.0-beta.17",
+      "@vue/compiler-core": "3.6.0-beta.17",
+      "@vue/compiler-vapor": "3.6.0-beta.17",
+      "@vue/reactivity": "3.6.0-beta.17",
+      "@vue/shared": "3.6.0-beta.17",
+      "@vitejs/plugin-vue": "6.0.7"
+    },
+    "patchedDependencies": {
+      "vue@3.6.0-beta.17": "patches/vue@3.6.0-beta.17.patch"
+    }
+  }
+}
